@@ -108,7 +108,8 @@ function vNgoFeed(){
   const items = feed().sort((a,b)=>a.expiry-b.expiry);
   return `<div class="flex flex-wrap items-center gap-3 mb-5">
     <label class="text-sm font-medium flex items-center gap-2">Claiming as <select id="fn" class="inp !w-auto">${S.ngos.map(x=>x.name).map(n=>`<option ${n===S.ngo?'selected':''}>${n}</option>`).join('')}</select></label>
-    <code class="mono text-xs bg-slate-900 text-green-300 px-3 py-1.5 rounded-lg">SELECT * FROM v_available_food ORDER BY expiry ASC;</code>
+    
+
     <span class="text-sm text-slate-500">${items.length} available</span></div>
   <div class="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
   ${items.map(l=>`<article class="card p-5 flex flex-col ${l.id===freshId?'fresh':''}">
