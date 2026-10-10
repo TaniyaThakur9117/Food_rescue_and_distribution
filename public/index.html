@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FoodRescue DBMS Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{font-family:Manrope,system-ui,sans-serif;background:#f1f5f2;color:#0f172a}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+.nav-btn[aria-current="true"]{background:#14532d;color:#fff}
+.nav-btn:not([aria-current="true"]):hover{background:#e2e8f0}
+th{font-weight:600;font-size:.75rem;color:#64748b;text-align:left;padding:.65rem 1rem;background:#f8fafc;white-space:nowrap}
+td{padding:.7rem 1rem;font-size:.875rem;border-top:1px solid #e2e8f0;vertical-align:middle}
+tbody tr:hover{background:#f8fafc}
+.inp{width:100%;border:1px solid #cbd5e1;border-radius:.5rem;padding:.55rem .75rem;font-size:.875rem;background:#fff}
+.inp:focus,.btn:focus-visible,.nav-btn:focus-visible{outline:2px solid #16a34a;outline-offset:2px}
+.btn{border-radius:.5rem;font-weight:600;font-size:.875rem;padding:.55rem 1rem;transition:background .15s}
+.btn-p{background:#15803d;color:#fff}.btn-p:hover{background:#166534}
+.btn-s{background:#0f172a;color:#fff}.btn-s:hover{background:#1e293b}
+.btn:disabled{background:#e2e8f0;color:#94a3b8;cursor:not-allowed}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem}
+.fresh{animation:flash 1.6s ease-out}
+@keyframes flash{from{background:#bbf7d0}to{background:transparent}}
+@media (prefers-reduced-motion:reduce){.fresh{animation:none}}
+</style>
+</head>
+<body>
+<div class="min-h-screen lg:flex">
+  <aside class="lg:w-64 lg:min-h-screen bg-white border-b lg:border-b-0 lg:border-r border-slate-200 lg:sticky lg:top-0 lg:h-screen shrink-0">
+    <div class="px-5 py-4 flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-green-800 text-white grid place-items-center font-extrabold">F</div>
+      <div><p class="font-extrabold leading-tight">FoodRescue</p><p class="text-xs text-slate-500">Redistribution System</p></div>
+    </div>
+    <nav class="px-3 pb-3 flex lg:flex-col gap-1 overflow-x-auto" id="nav" aria-label="Views"></nav>
+    <div class="hidden lg:block absolute bottom-0 inset-x-0 p-4 text-xs text-slate-500 border-t border-slate-200">
+      <p class="font-semibold text-slate-700">Schema</p>
+      <p class="mono mt-1 leading-relaxed">donor · listing · ngo · delivery · audit_log</p>
+    </div>
+  </aside>
+
+  <main class="flex-1 min-w-0 p-4 sm:p-6 lg:p-8">
+    <header class="mb-6">
+      <h1 id="title" class="text-2xl font-extrabold tracking-tight"></h1>
+      <p id="sub" class="text-slate-500 text-sm mt-1 max-w-2xl"></p>
+    </header>
+    <div id="view"></div>
+  </main>
+</div>
+<div id="toast" class="fixed bottom-5 right-5 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg hidden z-50" role="status"></div>
+
+<script>
+const H = 3600e3, now = () => Date.now();
+const DONORS = ['Green Leaf Bakery','Spice Route Kitchen','Hotel Sayaji','Annapurna Mess','Fresh Basket Mart'];
+let uid = 100;
+const S = {
+  tab: 'donor', donor: DONORS[0], ngo: '', minKg: 50, edit: null,
+  listings: [], deliveries: [], log: [], ngos: [], vols: []
+};
+const TABS = [
+  ['donor','Donor Portal','Post surplus food and review your listings.','Donors insert rows into the listing table. Each insert fires an audit trigger.'],
+  ['ngo','NGO Live Feed','Available food near you','Cards read from the view v_available_food. Claiming updates the listing and creates a delivery task.'],
+  ['vol','Volunteer Deliveries','Active pickup and drop-off tasks','Advance each task. Marking Delivered fires the impact trigger.'],
+  ['ngos','NGO Registry','Register and manage NGOs','Adds, edits and deletes rows in the ngo table.'],
+  ['vols','Volunteer Registry','Register and manage volunteers','Adds, edits and deletes rows in the volunteer table.'],
+  ['admin','Admin & DBMS Analytics','Rescue impact at a glance','Aggregates, GROUP BY / HAVING output and the trigger audit trail, computed live from the data.']
+];
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = t => new Date(t).toLocaleString([], {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+const left = t => { const m = Math.round((t-now())/6e4); if (m<=0) return 'Expired'; return m>=60 ? Math.floor(m/60)+'h '+(m%60)+'m left' : m+'m left'; };
+const badge = s => {
+  const c = {Available:'bg-green-100 text-green-800',Claimed:'bg-amber-100 text-amber-800',Delivered:'bg-slate-200 text-slate-700',Assigned:'bg-amber-100 text-amber-800','Picked Up':'bg-sky-100 text-sky-800',Expired:'bg-red-100 text-red-700',Cancelled:'bg-red-100 text-red-700'}[s]||'bg-slate-100';
+  return `<span class="px-2 py-0.5 rounded-full text-xs font-semibold ${c}">${s}</span>`;
+};
+let freshId = null;
+function audit(table, op, trg, detail){ S.log.unshift({ts:now(),table,op,trg,detail}); }
+function toast(m){ const t = document.getElementById('toast'); t.textContent = m; t.classList.remove('hidden'); clearTimeout(toast.h); toast.h = setTimeout(()=>t.classList.add('hidden'),2600); }
+function feed(){ return S.listings.filter(l => l.status==='Available' && l.expiry>now()); }
+
+function vDonor(){
+  const mine = S.listings.filter(l => l.donor===S.donor).sort((a,b)=>b.id-a.id);
+  const def = new Date(now()+6*H - new Date().getTimezoneOffset()*6e4).toISOString().slice(0,16);
+  return `<div class="grid xl:grid-cols-3 gap-6">
+    <form id="f" class="card p-5 space-y-4 xl:col-span-1 self-start">
+      <h2 class="font-bold">New surplus listing</h2>
+      <label class="block text-sm font-medium">Posting as
+        <select id="fd" class="inp mt-1">${DONORS.map(d=>`<option ${d===S.donor?'selected':''}>${d}</option>`).join('')}</select></label>
+      <label class="block text-sm font-medium">Item name<input name="item" required maxlength="60" class="inp mt-1" placeholder="e.g. Vegetable pulao"></label>
+      <label class="block text-sm font-medium">Category
+        <select name="category" class="inp mt-1">${['Cooked meals','Bakery','Fruits & vegetables','Packaged food','Dairy','Other'].map(c=>`<option>${c}</option>`).join('')}</select></label>
+      <label class="block text-sm font-medium">Quantity (kg)<input name="kg" type="number" min="1" step="0.5" required class="inp mt-1" placeholder="25"></label>
+      <label class="block text-sm font-medium">Expiry time<input name="expiry" type="datetime-local" value="${def}" required class="inp mt-1"></label>
+      <label class="block text-sm font-medium">Pickup address<input name="addr" required maxlength="80" class="inp mt-1" placeholder="Street, area"></label>
+      <button class="btn btn-p w-full">Post listing</button>
+    </form>
+    <section class="card xl:col-span-2 overflow-hidden">
+      <div class="px-5 py-4 flex justify-between items-center"><h2 class="font-bold">Listings by ${esc(S.donor)}</h2><span class="text-xs text-slate-500">${mine.length} rows</span></div>
+      <div class="overflow-x-auto"><table class="w-full min-w-[640px]"><thead><tr><th>ID</th><th>Item</th><th>Category</th><th>Qty (kg)</th><th>Expiry</th><th>Status</th><th>Action</th></tr></thead><tbody>
+      ${mine.map(l=>`<tr class="${l.id===freshId?'fresh':''}"><td class="mono">#${l.id}</td><td class="font-semibold">${esc(l.item)}</td><td>${esc(l.category||'')}</td><td>${l.kg}</td><td>${fmt(l.expiry)}</td><td>${badge(l.status==='Available'&&l.expiry<=now()?'Expired':l.status)}</td><td>${l.status==='Available'?`<button data-cancel-listing="${l.id}" class="btn btn-s !py-1">Cancel</button>`:''}</td></tr>`).join('') || '<tr><td colspan="7" class="text-slate-500">No listings yet. Post your first surplus above.</td></tr>'}
+      </tbody></table></div></section></div>`;
+}
+
+function vNgoFeed(){
+  const items = feed().sort((a,b)=>a.expiry-b.expiry);
+  return `<div class="flex flex-wrap items-center gap-3 mb-5">
+    <label class="text-sm font-medium flex items-center gap-2">Claiming as <select id="fn" class="inp !w-auto">${S.ngos.map(x=>x.name).map(n=>`<option ${n===S.ngo?'selected':''}>${n}</option>`).join('')}</select></label>
+    <code class="mono text-xs bg-slate-900 text-green-300 px-3 py-1.5 rounded-lg">SELECT * FROM v_available_food ORDER BY expiry ASC;</code>
+    <span class="text-sm text-slate-500">${items.length} available</span></div>
+  <div class="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
+  ${items.map(l=>`<article class="card p-5 flex flex-col ${l.id===freshId?'fresh':''}">
+    <div class="flex justify-between items-start gap-2"><h3 class="font-bold">${esc(l.item)}</h3>${badge('Available')}</div>
+    <p class="text-sm text-slate-500 mt-0.5">${esc(l.donor)}, ${esc(l.category||"Other")}</p>
+    <p class="text-3xl font-extrabold text-green-800 mt-4">${l.kg}<span class="text-sm font-semibold text-slate-500 ml-1">kg</span></p>
+    <dl class="text-sm mt-3 space-y-1 text-slate-600"><div>Pickup: ${esc(l.addr)}</div><div class="${l.expiry-now()<6*H?'text-red-600 font-semibold':''}">${left(l.expiry)}</div></dl>
+    <button data-claim="${l.id}" class="btn btn-p mt-5">Claim for ${esc(S.ngo)}</button></article>`).join('') || '<p class="text-slate-500 col-span-full">Nothing available right now. New donor listings appear here instantly.</p>'}
+  </div>`;
+}
+
+function vNgo(){
+  const rows = S.listings.filter(l=>l.status==='Claimed' && l.ngo===S.ngo).map(l=>{
+    const d = S.deliveries.find(x=>x.listingId===l.id && x.step!=='Cancelled'); const can = d && d.step==='Assigned';
+    return `<tr><td class="font-semibold">${esc(l.item)}</td><td>${l.kg}</td><td>${esc(l.donor)}</td><td>${badge(d?d.step:'Claimed')}</td>
+      <td><button data-cancel-claim="${l.id}" class="btn btn-s !py-1" ${can?'':'disabled title="Already picked up"'}>Cancel claim</button></td></tr>`;}).join('');
+  return vNgoFeed() + `<section class="card overflow-hidden mt-8"><div class="px-5 py-4"><h2 class="font-bold">Claimed by ${esc(S.ngo)}</h2>
+    <p class="text-sm text-slate-500">You can cancel until the volunteer picks it up. The food returns to the live feed.</p></div>
+    <div class="overflow-x-auto"><table class="w-full min-w-[560px]"><thead><tr><th>Item</th><th>Qty (kg)</th><th>Donor</th><th>Task status</th><th>Action</th></tr></thead><tbody>
+    ${rows || '<tr><td colspan="5" class="text-slate-500">No active claims. Claim food from the feed above.</td></tr>'}</tbody></table></div></section>`;
+}
+const REG = {
+  ngos:{path:'ngos',noun:'NGO',key:'ngo_id',fields:[['name','NGO name'],['contact_person','Contact person'],['phone','Phone'],['address','Address']]},
+  vols:{path:'volunteers',noun:'Volunteer',key:'volunteer_id',fields:[['name','Full name'],['phone','Phone'],['area','Service area'],['vehicle','Vehicle']]}
+};
+function vRegistry(k){
+  const c = REG[k], rows = S[k], ed = S.edit && S.edit.k===k ? rows.find(r=>r[c.key]===S.edit.id) : null;
+  return `<div class="grid xl:grid-cols-3 gap-6">
+    <form id="reg" data-k="${k}" class="card p-5 space-y-4 self-start">
+      <h2 class="font-bold">${ed ? 'Edit '+c.noun+' #'+ed[c.key] : 'Register new '+c.noun}</h2>
+      ${c.fields.map(([f,l])=>`<label class="block text-sm font-medium">${l}<input name="${f}" ${f==='name'?'required':''} maxlength="80" value="${esc(ed?ed[f]||'':'')}" class="inp mt-1"></label>`).join('')}
+      <div class="flex gap-2"><button class="btn btn-p flex-1">${ed?'Save changes':'Register '+c.noun}</button>${ed?'<button type="button" data-edit-cancel class="btn btn-s">Discard</button>':''}</div>
+    </form>
+    <section class="card xl:col-span-2 overflow-hidden">
+      <div class="px-5 py-4 flex justify-between items-center"><h2 class="font-bold">Registered ${c.noun}s</h2><span class="text-xs text-slate-500">${rows.length} rows</span></div>
+      <div class="overflow-x-auto"><table class="w-full min-w-[640px]"><thead><tr><th>ID</th>${c.fields.map(([f,l])=>`<th>${l}</th>`).join('')}<th>Action</th></tr></thead><tbody>
+      ${rows.map(r=>`<tr class="${S.edit&&S.edit.k===k&&S.edit.id===r[c.key]?'fresh':''}"><td class="mono">#${r[c.key]}</td>${c.fields.map(([f])=>`<td>${esc(r[f]||'')}</td>`).join('')}
+        <td class="whitespace-nowrap"><button data-edit="${k}:${r[c.key]}" class="btn btn-s !py-1">Edit</button> <button data-del="${k}:${r[c.key]}" class="btn !py-1 bg-red-50 text-red-700 hover:bg-red-100">Delete</button></td></tr>`).join('')
+        || `<tr><td colspan="${c.fields.length+2}" class="text-slate-500">No ${c.noun}s yet. Use the form to register the first one.</td></tr>`}
+      </tbody></table></div></section></div>`;
+}
+
+function vVol(){
+  const rows = S.deliveries.filter(d=>d.step!=='Cancelled').sort((a,b)=>(a.step==='Delivered')-(b.step==='Delivered')||b.id-a.id);
+  return `<div class="space-y-3">${rows.map(d=>{
+    const l = S.listings.find(x=>x.id===d.listingId); const done = d.step==='Delivered';
+    return `<article class="card p-5 flex flex-col md:flex-row md:items-center gap-4 ${d.id===freshId?'fresh':''} ${done?'opacity-70':''}">
+      <div class="flex-1 min-w-0"><div class="flex items-center gap-2 flex-wrap"><h3 class="font-bold">Task #${d.id}: ${esc(l.item)}</h3>${badge(d.step)}</div>
+        <p class="text-sm text-slate-600 mt-2"><b>Pickup</b> ${esc(l.donor)}, ${esc(l.addr)}</p>
+        <p class="text-sm text-slate-600"><b>Drop-off</b> ${esc(d.ngo)} &middot; ${l.kg} kg &middot; Volunteer ${esc(d.vol)}</p></div>
+      <div class="flex gap-2">
+        <button data-step="${d.id}:Picked Up" class="btn btn-s" ${d.step!=='Assigned'?'disabled':''}>Picked Up</button>
+        <button data-step="${d.id}:Delivered" class="btn btn-p" ${d.step!=='Picked Up'?'disabled':''}>Delivered</button></div></article>`;}).join('') || '<p class="text-slate-500">No tasks yet. Claim food in the NGO Live Feed to create one.</p>'}</div>`;
+}
+
+function topDonors(){
+  const g = {};
+  S.listings.filter(l=>l.status==='Delivered').forEach(l=>{ g[l.donor] ??= {donor:l.donor,n:0,kg:0}; g[l.donor].n++; g[l.donor].kg += l.kg; });
+  return Object.values(g).filter(r=>r.kg>=S.minKg).sort((a,b)=>b.kg-a.kg);
+}
+function vAdmin(){
+  const del = S.listings.filter(l=>l.status==='Delivered');
+  const kg = del.reduce((s,l)=>s+l.kg,0), top = topDonors(), max = top[0]?.kg||1;
+  const transit = S.deliveries.filter(d=>!['Delivered','Cancelled'].includes(d.step)).length;
+  const stat = (k,v,s)=>`<div class="card p-5"><p class="text-sm text-slate-500">${k}</p><p class="text-3xl font-extrabold mt-1 text-green-800">${v}</p><p class="mono text-xs text-slate-400 mt-2 break-words">${s}</p></div>`;
+  return `<div class="grid sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+    ${stat('Total kg rescued',kg.toLocaleString(),'SUM(kg) WHERE status=\'Delivered\'')}
+    ${stat('Meals served (est.)',Math.round(kg*2.5).toLocaleString(),'SUM(kg) * 2.5')}
+    ${stat('Deliveries completed',del.length,'COUNT(*) WHERE status=\'Delivered\'')}
+    ${stat('Tasks in progress',transit,'COUNT(*) WHERE step <> \'Delivered\'')}</div>
+  <div class="grid xl:grid-cols-2 gap-6">
+    <section class="card overflow-hidden"><div class="px-5 py-4"><h2 class="font-bold">Top donors</h2>
+      
+      <label class="text-sm font-medium mt-3 flex items-center gap-3">HAVING threshold
+        <input id="th" type="range" min="0" max="200" step="10" value="${S.minKg}" class="accent-green-700 flex-1"><span class="mono w-14">${S.minKg} kg</span></label></div>
+      <div class="overflow-x-auto"><table class="w-full min-w-[420px]"><thead><tr><th>Rank</th><th>Donor</th><th>Listings</th><th>Total kg</th></tr></thead><tbody>
+      ${top.map((r,i)=>`<tr><td>${i+1}</td><td class="font-semibold">${esc(r.donor)}</td><td>${r.n}</td><td><div class="flex items-center gap-2"><span class="w-10">${r.kg}</span><div class="h-2 bg-slate-100 rounded-full flex-1 min-w-[60px]"><div class="h-2 bg-green-600 rounded-full" style="width:${r.kg/max*100}%"></div></div></div></td></tr>`).join('') || '<tr><td colspan="4" class="text-slate-500">No donor meets this HAVING threshold. Lower it to see more rows.</td></tr>'}
+      </tbody></table></div></section>
+    <section class="card overflow-hidden"><div class="px-5 py-4 flex justify-between items-center"><h2 class="font-bold">Impact log / trigger audit trail</h2><span class="text-xs text-slate-500">${S.log.length} rows</span></div>
+      <div class="overflow-auto max-h-[420px]"><table class="w-full min-w-[520px]"><thead><tr><th>Time</th><th>Table</th><th>Op</th><th>Trigger</th><th>Detail</th></tr></thead><tbody>
+      ${S.log.map((e,i)=>`<tr class="${i===0&&e.ts>now()-3000?'fresh':''}"><td class="whitespace-nowrap">${fmt(e.ts)}</td><td class="mono">${e.table}</td><td><span class="font-semibold ${e.op==='INSERT'?'text-green-700':'text-sky-700'}">${e.op}</span></td><td class="mono text-xs">${e.trg}</td><td class="text-slate-600">${esc(e.detail)}</td></tr>`).join('')}
+      </tbody></table></div></section></div>`;
+}
+
+function render(){
+  const t = TABS.find(x=>x[0]===S.tab);
+  document.getElementById('title').textContent = t[1];
+  document.getElementById('sub').textContent = t[3];
+  const counts = {ngo:feed().length, vol:S.deliveries.filter(d=>!['Delivered','Cancelled'].includes(d.step)).length};
+  document.getElementById('nav').innerHTML = TABS.map(([k,n])=>`<button class="nav-btn btn text-left whitespace-nowrap flex items-center justify-between gap-3 lg:w-full" data-tab="${k}" ${S.tab===k?'aria-current="true"':''}><span>${n}</span>${counts[k]?`<span class="text-xs bg-green-100 text-green-800 rounded-full px-2">${counts[k]}</span>`:''}</button>`).join('');
+  document.getElementById('view').innerHTML = {donor:vDonor,ngo:vNgo,vol:vVol,ngos:()=>vRegistry('ngos'),vols:()=>vRegistry('vols'),admin:vAdmin}[S.tab]();
+  freshId = null;
+}
+
+const api = async (url, body, method) => {
+  const r = await fetch(url, body ? {method:method||'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : undefined);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Request failed');
+  return j;
+};
+async function loadAll(fresh){
+  try { Object.assign(S, await api('/api/state')); if (!S.ngos.some(n=>n.name===S.ngo)) S.ngo = S.ngos[0]?.name || ''; freshId = fresh ?? null; render(); }
+  catch (e) { toast('Cannot reach the API: ' + e.message); }
+}
+document.addEventListener('click', async e => {
+  const tab = e.target.closest('[data-tab]'); if (tab){ S.tab = tab.dataset.tab; S.edit = null; return render(); }
+  try {
+    const cl = e.target.closest('[data-cancel-listing]');
+    if (cl){ if (!confirm('Cancel this listing?')) return; await api('/api/listings/'+cl.dataset.cancelListing+'/cancel', {}); toast('Listing cancelled.'); return loadAll(); }
+    const cc = e.target.closest('[data-cancel-claim]');
+    if (cc){ if (!confirm('Cancel this claim and return the food to the live feed?')) return; await api('/api/claim/'+cc.dataset.cancelClaim+'/cancel', {}); toast('Claim cancelled. Food is back in the live feed.'); return loadAll(); }
+    const ed = e.target.closest('[data-edit]');
+    if (ed){ const [k,id] = ed.dataset.edit.split(':'); S.edit = {k, id:+id}; return render(); }
+    if (e.target.closest('[data-edit-cancel]')){ S.edit = null; return render(); }
+    const dl = e.target.closest('[data-del]');
+    if (dl){ const [k,id] = dl.dataset.del.split(':'); if (!confirm('Delete this '+REG[k].noun+'?')) return;
+      await api('/api/'+REG[k].path+'/'+id, {}, 'DELETE'); toast(REG[k].noun+' deleted.'); S.edit = null; return loadAll(); }
+    const c = e.target.closest('[data-claim]');
+    if (c){
+      const r = await api('/api/claim', {listingId:+c.dataset.claim, ngo:S.ngo});
+      toast('Claimed. Volunteer task created.'); return loadAll(r.deliveryId);
+    }
+    const s = e.target.closest('[data-step]');
+    if (s){
+      const [id, step] = s.dataset.step.split(':');
+      await api('/api/deliveries/'+id+'/step', {step});
+      toast(step==='Delivered' ? 'Delivered. Trigger updated the impact log.' : 'Pickup confirmed.'); loadAll(+id);
+    }
+  } catch (err) { toast(err.message); loadAll(); }
+});
+document.addEventListener('change', e => {
+  if (e.target.id==='fd'){ S.donor = e.target.value; render(); }
+  if (e.target.id==='fn'){ S.ngo = e.target.value; render(); }
+});
+document.addEventListener('input', e => {
+  if (e.target.id==='th'){ S.minKg = +e.target.value; render(); document.getElementById('th').focus(); }
+});
+document.addEventListener('submit', async e => {
+  if (e.target.id==='reg'){ e.preventDefault(); const c = REG[e.target.dataset.k]; const body = Object.fromEntries(new FormData(e.target));
+    try { const editing = !!S.edit;
+      if (editing) await api('/api/'+c.path+'/'+S.edit.id, body, 'PUT'); else await api('/api/'+c.path, body);
+      toast(c.noun + (editing?' updated.':' registered.')); S.edit = null; loadAll();
+    } catch (err) { toast(err.message); } return; }
+  if (e.target.id!=='f') return; e.preventDefault();
+  const f = new FormData(e.target);
+  try {
+    const r = await api('/api/listings', {donor:S.donor, item:f.get('item').trim(), kg:+f.get('kg'),
+      expiry:new Date(f.get('expiry')).getTime(), addr:f.get('addr').trim(), category:f.get('category')});
+    toast('Listing inserted into MySQL. It is now live in the NGO feed.'); loadAll(r.id);
+  } catch (err) { toast(err.message); }
+});
+loadAll();
+setInterval(() => { if (S.tab==='ngo' || S.tab==='vol') loadAll(); }, 15000);
+</script>
+</body>
+</html>

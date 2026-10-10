@@ -1,0 +1,1 @@
+module.exports = require('./crud')('ngo', 'ngo_id', ['name', 'contact_person', 'phone', 'address'], 'ngos');
